@@ -16,17 +16,22 @@ use util::json_response;
 pub trait CargoError: Send + fmt::Display + 'static {
     fn description(&self) -> &str;
     fn cause(&self) -> Option<&(CargoError)> { None }
+    fn status(&self) -> Option<(u32, &'static str)> { None }
+    fn human(&self) -> bool { false }
 
     fn response(&self) -> Option<Response> {
         if self.human() {
-            Some(json_response(&Bad {
+            let mut response = json_response(&Bad {
                 errors: vec![StringError { detail: self.description().to_string() }]
-            }))
+            });
+            if let Some(status) = self.status() {
+                response.status = status;
+            }
+            Some(response)
         } else {
             self.cause().and_then(|cause| cause.response())
         }
     }
-    fn human(&self) -> bool { false }
 }
 
 impl fmt::Debug for Box<CargoError> {
@@ -39,12 +44,14 @@ impl CargoError for Box<CargoError> {
     fn description(&self) -> &str { (**self).description() }
     fn cause(&self) -> Option<&CargoError> { (**self).cause() }
     fn human(&self) -> bool { (**self).human() }
+    fn status(&self) -> Option<(u32, &'static str)> { (**self).status() }
     fn response(&self) -> Option<Response> { (**self).response() }
 }
 impl<T: CargoError> CargoError for Box<T> {
     fn description(&self) -> &str { (**self).description() }
     fn cause(&self) -> Option<&CargoError> { (**self).cause() }
     fn human(&self) -> bool { (**self).human() }
+    fn status(&self) -> Option<(u32, &'static str)> { (**self).status() }
     fn response(&self) -> Option<Response> { (**self).response() }
 }
 
@@ -97,6 +104,7 @@ impl<E: CargoError> CargoError for ChainedError<E> {
     fn description(&self) -> &str { self.error.description() }
     fn cause(&self) -> Option<&CargoError> { Some(&*self.cause) }
     fn response(&self) -> Option<Response> { self.error.response() }
+    fn status(&self) -> Option<(u32, &'static str)> { self.error.status() }
     fn human(&self) -> bool { self.error.human() }
 }
 
@@ -145,6 +153,7 @@ struct ConcreteCargoError {
     detail: Option<String>,
     cause: Option<Box<CargoError>>,
     human: bool,
+    status: Option<(u32, &'static str)>,
 }
 
 impl fmt::Display for ConcreteCargoError {
@@ -161,20 +170,15 @@ impl CargoError for ConcreteCargoError {
     fn description(&self) -> &str { &self.description }
     fn cause(&self) -> Option<&CargoError> { self.cause.as_ref().map(|c| &**c) }
     fn human(&self) -> bool { self.human }
+    fn status(&self) -> Option<(u32, &'static str)> { self.status }
 }
 
 pub struct NotFound;
 
 impl CargoError for NotFound {
-    fn description(&self) -> &str { "not found" }
-
-    fn response(&self) -> Option<Response> {
-        let mut response = json_response(&Bad {
-            errors: vec![StringError { detail: "Not Found".to_string() }],
-        });
-        response.status = (404, "Not Found");
-        Some(response)
-    }
+    fn description(&self) -> &str { "Not Found" }
+    fn status(&self) -> Option<(u32, &'static str)> { Some((404, "Not Found")) }
+    fn human(&self) -> bool { true }
 }
 
 impl fmt::Display for NotFound {
@@ -186,17 +190,9 @@ impl fmt::Display for NotFound {
 pub struct Unauthorized;
 
 impl CargoError for Unauthorized {
-    fn description(&self) -> &str { "unauthorized" }
-
-    fn response(&self) -> Option<Response> {
-        let mut response = json_response(&Bad {
-            errors: vec![StringError {
-                detail: "must be logged in to perform that action".to_string(),
-            }],
-        });
-        response.status = (403, "Forbidden");
-        Some(response)
-    }
+    fn description(&self) -> &str { "must be logged in to perform that action" }
+    fn status(&self) -> Option<(u32, &'static str)> { Some((403, "Forbidden")) }
+    fn human(&self) -> bool { true }
 }
 
 impl fmt::Display for Unauthorized {
@@ -211,6 +207,7 @@ pub fn internal_error(error: &str, detail: &str) -> Box<CargoError> {
         detail: Some(detail.to_string()),
         cause: None,
         human: false,
+        status: None,
     })
 }
 
@@ -220,6 +217,7 @@ pub fn internal<S: ToString + ?Sized>(error: &S) -> Box<CargoError> {
         detail: None,
         cause: None,
         human: false,
+        status: None,
     })
 }
 
@@ -229,6 +227,7 @@ pub fn human<S: ToString + ?Sized>(error: &S) -> Box<CargoError> {
         detail: None,
         cause: None,
         human: true,
+        status: Some((400, "Bad Request")),
     })
 }
 
